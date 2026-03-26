@@ -1,4 +1,4 @@
-# 📈 SEC Stock Analyzer
+# 📈 Stock Analyzer
 
 A free, fully local stock analysis tool that pulls real financial data directly from SEC EDGAR filings and uses AI to generate buy/sell recommendations — no paid APIs required.
 

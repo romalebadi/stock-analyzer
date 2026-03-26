@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import ollama
-from sec_fetcher import fetch_and_export
+from stock_fetcher import fetch_and_export
 
 st.set_page_config(page_title="SEC Stock Analyzer", page_icon="📈", layout="wide")
 

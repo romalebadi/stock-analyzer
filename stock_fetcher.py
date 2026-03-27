@@ -49,6 +49,7 @@ def build_dataframe(facts, ticker):
         "EPS_Basic":         ["EarningsPerShareBasic", "IncomeLossFromContinuingOperationsPerBasicShare"],
         "EPS_Diluted":       ["EarningsPerShareDiluted", "IncomeLossFromContinuingOperationsPerDilutedShare"],
     }
+    
 
     balance_metrics = {
         "TotalAssets":        ["Assets"],

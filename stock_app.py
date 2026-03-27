@@ -60,7 +60,20 @@ if ticker:
 
     # ── Data Table ────────────────────────────────────────────────
     st.subheader("📋 Raw Financial Data")
-    st.dataframe(df, use_container_width=True)
+    
+    # Format numeric columns with $ and commas
+    format_dict = {}
+    for col in df.columns:
+        if col not in ["Date", "Ticker", "EPS_Basic", "EPS_Diluted"]:
+            if df[col].dtype in ["float64", "int64"]:
+                format_dict[col] = "${:,.0f}"
+
+    if "EPS_Basic" in df.columns:
+        format_dict["EPS_Basic"] = "${:,.2f}"
+    if "EPS_Diluted" in df.columns:
+        format_dict["EPS_Diluted"] = "${:,.2f}"
+
+    st.dataframe(df.style.format(format_dict, na_rep=""), use_container_width=True)
 
     # ── CSV Download ──────────────────────────────────────────────
     csv = df.to_csv(index=False)

@@ -146,76 +146,190 @@ def is_balance_sheet(tag):
     return classify_tag(tag) == "balance"
 
 def derive_quarterly(entries):
-    """Back into Q4 = Annual - Q1 - Q2 - Q3 for flow statement items"""
-    quarterly = {e["end"]: e["val"] for e in entries if e.get("form") == "10-Q"}
-    annual    = {e["end"]: e["val"] for e in entries if e.get("form") == "10-K"}
-    result = dict(quarterly)
+    """Derive true quarterly values from a mix of standalone and YTD entries"""
+    from datetime import datetime, timedelta
 
-    for ann_date, ann_val in annual.items():
-        ann_year = ann_date[:4]
-        q1 = q2 = q3 = None
-        for q_date, q_val in quarterly.items():
-            if q_date[:4] == ann_year or (
-                q_date > f"{int(ann_year)-1}-06-30" and q_date < ann_date
-            ):
-                month = int(q_date[5:7])
-                if month <= 3:
-                    q1 = q_val
-                elif month <= 6:
-                    q2 = q_val
-                elif month <= 9:
-                    q3 = q_val
+    standalone = {}
+    ytd        = {}
+    annual     = {}
 
-        known = sum(v for v in [q1, q2, q3] if v is not None)
-        count = sum(1 for v in [q1, q2, q3] if v is not None)
-        if count >= 2:
+    for e in entries:
+        end   = e["end"]
+        start = e.get("start", "")
+        form  = e.get("form", "")
+
+        if start:
+            try:
+                start_dt  = datetime.strptime(start, "%Y-%m-%d")
+                end_dt    = datetime.strptime(end,   "%Y-%m-%d")
+                span_days = (end_dt - start_dt).days
+            except:
+                continue
+
+            def keep_best(d, key):
+                if key not in d:
+                    d[key] = e
+                else:
+                    existing = d[key]
+                    if form == "10-K" and existing.get("form") != "10-K":
+                        d[key] = e
+                    elif form == existing.get("form") and e.get("filed", "") > existing.get("filed", ""):
+                        d[key] = e
+
+            if span_days >= 350:
+                keep_best(annual, end)
+            elif 111 <= span_days <= 349:
+                keep_best(ytd, end)
+            elif 70 <= span_days <= 110:
+                keep_best(standalone, end)
+
+        else:
+            # No start date — classify by form type only
+            # 10-K = annual, 10-Q = treat as standalone quarterly
+            def keep_best_no_start(d, key):
+                if key not in d:
+                    d[key] = e
+                elif e.get("filed", "") > d[key].get("filed", ""):
+                    d[key] = e
+
+            if form == "10-K":
+                keep_best_no_start(annual, end)
+            elif form == "10-Q":
+                keep_best_no_start(standalone, end)
+
+    # Extract values
+    q_vals = {d: e["val"] for d, e in standalone.items()}
+    result  = dict(q_vals)
+
+    # Back into missing quarters from YTD entries
+    for ytd_end in sorted(ytd.keys()):
+        ytd_val      = ytd[ytd_end]["val"]
+        ytd_start    = ytd[ytd_end].get("start", "")
+        ytd_end_dt   = datetime.strptime(ytd_end, "%Y-%m-%d")
+
+        if not ytd_start:
+            continue
+
+        ytd_start_dt = datetime.strptime(ytd_start, "%Y-%m-%d")
+        covered = {
+            d: v for d, v in result.items()
+            if ytd_start_dt <= datetime.strptime(d, "%Y-%m-%d") < ytd_end_dt
+        }
+
+        if ytd_end not in result and len(covered) >= 1:
+            known = sum(covered.values())
+            result[ytd_end] = ytd_val - known
+
+    # Back into Q4 from annual entries
+    for ann_date, ann_entry in annual.items():
+        ann_val = ann_entry["val"]
+        ann_dt  = datetime.strptime(ann_date, "%Y-%m-%d")
+        nine_months_ago = ann_dt - timedelta(days=275)
+
+        relevant = {
+            d: v for d, v in result.items()
+            if nine_months_ago <= datetime.strptime(d, "%Y-%m-%d") < ann_dt
+        }
+
+        if len(relevant) >= 2:
+            known  = sum(relevant.values())
             result[ann_date] = ann_val - known
 
     return result
 
 def extract_all_metrics(facts):
-    """Extract every metric from SEC facts, classify, and return as dicts"""
+    """Extract only meaningful metrics using a whitelist approach"""
     income_data   = {}
     balance_data  = {}
     cashflow_data = {}
 
-    for tag, content in facts.items():
-        units = content.get("units", {})
-        unit_data = units.get("USD", units.get("shares", []))
-        if not unit_data:
-            continue
+    # ── Whitelist of tags we want ─────────────────────────────────
+    income_tags = {
+        "Revenue":        ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"],
+        "CostOfRevenue":  ["CostOfGoodsAndServicesSold", "CostOfRevenue", "CostOfGoodsSold"],
+        "GrossProfit":    ["GrossProfit"],
+        "R&D_Expense":    ["ResearchAndDevelopmentExpense"],
+        "SG&A_Expense":   ["SellingGeneralAndAdministrativeExpense"],
+        "OperatingIncome":["OperatingIncomeLoss"],
+        "InterestExpense":["InterestExpense"],
+        "PreTaxIncome":   ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"],
+        "IncomeTaxExpense":["IncomeTaxExpenseBenefit"],
+        "NetIncome":      ["NetIncomeLoss"],
+        "EPS_Basic":      ["EarningsPerShareBasic"],
+        "EPS_Diluted":    ["EarningsPerShareDiluted"],
+        "SharesBasic":    ["WeightedAverageNumberOfSharesOutstandingBasic"],
+        "SharesDiluted":  ["WeightedAverageNumberOfDilutedSharesOutstanding"],
+    }
 
-        entries = [
-            e for e in unit_data
-            if e.get("form") in ["10-Q", "10-K"] and "frame" not in e
-        ]
-        if not entries:
-            continue
+    balance_tags = {
+        "TotalAssets":          ["Assets"],
+        "CurrentAssets":        ["AssetsCurrent"],
+        "Cash":                 ["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalents"],
+        "ShortTermInvestments": ["ShortTermInvestments", "MarketableSecuritiesCurrent"],
+        "AccountsReceivable":   ["AccountsReceivableNetCurrent"],
+        "Inventory":            ["InventoryNet"],
+        "PP&E_Net":             ["PropertyPlantAndEquipmentNet"],
+        "Goodwill":             ["Goodwill"],
+        "TotalLiabilities":     ["Liabilities"],
+        "CurrentLiabilities":   ["LiabilitiesCurrent"],
+        "AccountsPayable":      ["AccountsPayableCurrent"],
+        "ShortTermDebt":        ["ShortTermBorrowings", "DebtCurrent"],
+        "LongTermDebt":         ["LongTermDebt", "LongTermDebtNoncurrent"],
+        "TotalEquity":          ["StockholdersEquity", "StockholdersEquityAttributableToParent"],
+        "RetainedEarnings":     ["RetainedEarningsAccumulatedDeficit"],
+    }
 
-        entries = sorted(entries, key=lambda x: x["end"])
+    cashflow_tags = {
+        "OperatingCashFlow":  ["NetCashProvidedByUsedInOperatingActivities"],
+        "InvestingCashFlow":  ["NetCashProvidedByUsedInInvestingActivities"],
+        "FinancingCashFlow":  ["NetCashProvidedByUsedInFinancingActivities"],
+        "CapEx":              ["PaymentsToAcquirePropertyPlantAndEquipment"],
+        "D&A":                ["DepreciationDepletionAndAmortization"],
+        "StockBasedComp":     ["ShareBasedCompensation"],
+        "ShareBuybacks":      ["PaymentsForRepurchaseOfCommonStock"],
+        "DividendsPaid":      ["PaymentsOfDividends"],
+    }
 
-        # Get plain English label
-        label = LABEL_MAP.get(tag, tag)
-        category = classify_tag(tag)
+    def get_entries(tags):
+        for tag in tags:
+            if tag not in facts:
+                continue
+            units = facts[tag].get("units", {})
+            unit_data = units.get("USD", units.get("shares", []))
+            entries = [e for e in unit_data if e.get("form") in ["10-Q", "10-K"]]
+            if not entries:
+                continue
+            # Deduplicate by (start, end) keeping most recently filed
+            seen = {}
+            for e in entries:
+                key = (e.get("start", ""), e["end"])
+                if key not in seen or e.get("filed", "") > seen[key].get("filed", ""):
+                    seen[key] = e
+            return sorted(seen.values(), key=lambda x: x["end"])
+        return []
 
-        if category == "balance":
-            # Point-in-time — just take last 16 values as-is
-            recent = entries[-16:]
-            data = {e["end"]: e["val"] for e in recent}
-            if label not in balance_data:
-                balance_data[label] = data
-
-        elif category == "cashflow":
+    # Extract income metrics
+    for label, tags in income_tags.items():
+        entries = get_entries(tags)
+        if entries:
             derived = derive_quarterly(entries)
             derived = dict(sorted(derived.items())[-16:])
-            if label not in cashflow_data:
-                cashflow_data[label] = derived
+            income_data[label] = derived
 
-        elif category == "income":
+    # Extract balance sheet metrics
+    for label, tags in balance_tags.items():
+        entries = get_entries(tags)
+        if entries:
+            data = {e["end"]: e["val"] for e in entries}
+            balance_data[label] = data
+
+    # Extract cash flow metrics
+    for label, tags in cashflow_tags.items():
+        entries = get_entries(tags)
+        if entries:
             derived = derive_quarterly(entries)
             derived = dict(sorted(derived.items())[-16:])
-            if label not in income_data:
-                income_data[label] = derived
+            cashflow_data[label] = derived
 
     return income_data, balance_data, cashflow_data
 
@@ -227,6 +341,10 @@ def build_dataframe(facts, ticker):
     for d in [income_data, balance_data, cashflow_data]:
         for vals in d.values():
             all_dates.update(vals.keys())
+
+    # Only keep standard quarter-end dates
+    valid_month_days = ["03-31", "06-30", "09-30", "12-31"]
+    all_dates = {d for d in all_dates if any(d.endswith(md) for md in valid_month_days)}
 
     # Build rows
     rows = []
@@ -240,6 +358,7 @@ def build_dataframe(facts, ticker):
             row[label] = vals.get(date)
         rows.append(row)
 
+    # Use pd.concat to avoid fragmentation warning
     df = pd.DataFrame(rows)
 
     # Forward fill balance sheet columns
@@ -247,9 +366,10 @@ def build_dataframe(facts, ticker):
         if col in df.columns:
             df[col] = df[col].ffill()
 
-    # Calculate FreeCashFlow
+    # Calculate FreeCashFlow cleanly
     if "OperatingCashFlow" in df.columns and "CapEx" in df.columns:
-        df["FreeCashFlow"] = df["OperatingCashFlow"] - df["CapEx"].fillna(0)
+        fcf = df["OperatingCashFlow"] - df["CapEx"].fillna(0)
+        df = pd.concat([df, fcf.rename("FreeCashFlow")], axis=1)
 
     # Drop rows where most columns are empty
     df = df.dropna(thresh=len(df.columns) // 3)
@@ -259,6 +379,9 @@ def build_dataframe(facts, ticker):
 
     # Drop columns that are entirely empty
     df = df.dropna(axis=1, how="all")
+
+    # Drop columns where more than 40% of values are missing
+    df = df.dropna(axis=1, thresh=int(len(df) * 0.6))
 
     # Put key columns first, rest follow
     priority_cols = [
@@ -280,7 +403,7 @@ def build_dataframe(facts, ticker):
     rest  = [c for c in df.columns if c not in front]
     df = df[front + rest]
 
-    return df
+    return df.copy()
 
 def fetch_and_export(ticker):
     print(f"\nFetching SEC data for {ticker.upper()}...")
@@ -296,7 +419,9 @@ def fetch_and_export(ticker):
     df.to_csv(filename, index=False)
 
     print(f"\n✅ Done! Exported {len(df)} rows x {len(df.columns)} columns to {filename}")
-    print(df[["Date", "Ticker", "Revenue", "NetIncome", "OperatingCashFlow"]].to_string(index=False))
+    preview_cols = ["Date", "Ticker"] + [c for c in ["Revenue", "NetIncome", "OperatingCashFlow"] if c in df.columns]
+    print(df[preview_cols].to_string(index=False))
+    print(f"\nColumns pulled: {list(df.columns[:10])}...")
     return df
 
 if __name__ == "__main__":

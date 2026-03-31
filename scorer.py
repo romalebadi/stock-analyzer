@@ -2,16 +2,24 @@ import pandas as pd
 import numpy as np
 
 def safe_growth(series):
-    """Calculate average QoQ growth rate from a series"""
+    """Calculate average QoQ growth rate from a series, handling negatives safely"""
     series = series.dropna()
     if len(series) < 2:
         return None
+
     growths = []
     for i in range(1, len(series)):
-        prev = series.iloc[i-1]
+        prev = series.iloc[i - 1]
         curr = series.iloc[i]
-        if prev != 0 and prev is not None:
-            growths.append((curr - prev) / abs(prev))
+
+        # Skip if previous is 0 or None
+        if prev is None or prev == 0:
+            continue
+
+        # Normal growth calculation
+        growth = (curr - prev) / prev
+        growths.append(growth)
+
     return np.mean(growths) if growths else None
 
 def score_trend(series, higher_is_better=True):
@@ -99,6 +107,42 @@ def score_margin(series, higher_is_better=True):
             score -= 2
 
     return max(0, min(10, score))
+
+def score_valuation(value, thresholds, higher_is_better=False):
+    """
+    Generic valuation scorer.
+    - value: the metric to score (EV/EBITDA or EV/FCF)
+    - thresholds: list of thresholds in increasing order
+      (e.g., [5, 10, 15, 20] for EV/EBITDA)
+    - higher_is_better: for valuation, usually lower is better
+    """
+    if value is None:
+        return 5.0  # Neutral if no data
+
+    if higher_is_better:
+        # Score from low to high
+        if value < thresholds[0]:
+            return 10
+        elif value < thresholds[1]:
+            return 8
+        elif value < thresholds[2]:
+            return 6
+        elif value < thresholds[3]:
+            return 4
+        else:
+            return 2
+    else:
+        # Lower is better
+        if value < thresholds[0]:
+            return 10
+        elif value < thresholds[1]:
+            return 8
+        elif value < thresholds[2]:
+            return 6
+        elif value < thresholds[3]:
+            return 4
+        else:
+            return 2
 
 def calculate_scores(df):
     """Calculate all metric scores and return a results dict"""
@@ -256,6 +300,36 @@ def calculate_scores(df):
         "NetAssets":         0.10,
         "RevenueGrowth":     0.15,
     }
+
+    # ── 12. EV/EBITDA (10%) ─────────────────────────────────────
+    if all(x in df.columns for x in ["MarketCap", "TotalDebt", "CashAndEquivalents", "OperatingIncome", "Depreciation"]):
+        ev = df["MarketCap"].iloc[-1] + df["TotalDebt"].iloc[-1] - df["CashAndEquivalents"].iloc[-1]
+        ebitda = df["OperatingIncome"].iloc[-1] + df.get("Depreciation", pd.Series([0]*len(df))).iloc[-1]
+        ev_ebitda = ev / ebitda if ebitda != 0 else None
+        ev_ebitda_score = score_valuation(ev_ebitda, [5, 10, 15, 20])
+        scores["EV_EBITDA"] = ev_ebitda_score
+        details["EV_EBITDA"] = f"{ev_ebitda:.2f}x" if ev_ebitda else "N/A"
+    else:
+        scores["EV_EBITDA"] = 5.0
+        details["EV_EBITDA"] = "N/A"
+
+# ── 13. EV/FCF (10%) ───────────────────────────────────────
+    if all(x in df.columns for x in ["MarketCap", "TotalDebt", "CashAndEquivalents", "FreeCashFlow"]):
+        ev = df["MarketCap"].iloc[-1] + df["TotalDebt"].iloc[-1] - df["CashAndEquivalents"].iloc[-1]
+        fcf = df["FreeCashFlow"].iloc[-1]
+        ev_fcf = ev / fcf if fcf not in (0, None) else None
+        ev_fcf = ev_fcf if ev_fcf is None or ev_fcf > 0 else None
+        ev_fcf_score = score_valuation(ev_fcf, [10, 20, 30, 40])
+        scores["EV_FCF"] = ev_fcf_score
+        details["EV_FCF"] = f"{ev_fcf:.2f}x" if ev_fcf else "N/A"
+    else:
+        scores["EV_FCF"] = 5.0
+        details["EV_FCF"] = "N/A"
+
+    weights.update({
+        "EV_EBITDA" : 0.05, # 5%
+        "EV_FCF" : 0.05 # 5%
+    })
 
     weighted_score = sum(scores[k] * weights[k] for k in weights if k in scores)
     final_score    = max(0, min(10, weighted_score + dilution_penalty))

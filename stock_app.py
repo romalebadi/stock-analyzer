@@ -84,6 +84,55 @@ if ticker:
         mime="text/csv"
     )
 
+# ── Quantitative Score ────────────────────────────────────────
+    st.subheader("📊 Quantitative Scoring Model")
+
+    from scorer import calculate_scores
+    result = calculate_scores(df)
+
+    # Final score display
+    col_score, col_verdict = st.columns([1, 2])
+    with col_score:
+        st.metric("Overall Score", f"{result['final_score']} / 10")
+    with col_verdict:
+        if result["verdict"] == "BUY":
+            st.success(f"{result['emoji']} Quantitative Verdict: {result['verdict']}")
+        elif result["verdict"] == "HOLD":
+            st.warning(f"{result['emoji']} Quantitative Verdict: {result['verdict']}")
+        else:
+            st.error(f"{result['emoji']} Quantitative Verdict: {result['verdict']}")
+
+    # Score breakdown table
+    categories = {
+        "⭐ Quality": ["ROE", "GrossMargin", "OperatingIncome", "NetIncome", "EPS"],
+        "💰 Cash Flow": ["FreeCashFlow", "OperatingCashFlow"],
+        "⚠️ Risk": ["Debt", "NetAssets"],
+        "📈 Growth": ["RevenueGrowth"],
+    }
+
+    for cat, metrics in categories.items():
+        st.markdown(f"**{cat}**")
+        rows = []
+        for m in metrics:
+            if m in result["scores"]:
+                score = result["scores"][m]
+                detail = result["details"].get(m, "N/A")
+                weight = int(result["weights"].get(m, 0) * 100)
+                bar = "🟩" * int(score) + "⬜" * (10 - int(score))
+                rows.append({
+                    "Metric": m,
+                    "Score": f"{score:.1f}/10",
+                    "Weight": f"{weight}%",
+                    "Latest Value": detail,
+                    "Visual": bar
+                })
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # Share dilution note
+    if "ShareDilution" in result["details"]:
+        st.caption(f"Share Dilution: {result['details']['ShareDilution']}")
+
     # ── AI Analysis ───────────────────────────────────────────────
     st.subheader("🤖 AI Buy/Sell Analysis")
 

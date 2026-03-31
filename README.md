@@ -9,6 +9,7 @@ A free, fully local stock analysis tool that pulls real financial data directly 
 - 📋 Exports full Income Statement, Balance Sheet, and Cash Flow data to CSV
 - 📈 Interactive charts for Revenue, Net Income, Free Cash Flow, and more
 - 🤖 AI-powered Buy/Hold/Sell recommendation using Llama 3.1 (runs 100% locally via Ollama)
+- 🧮 Quantitative Stock Scoring Model — evaluates stocks using multiple financial metrics including ROE, Gross Margin, Net Income, Free Cash Flow, Debt ratios, and Revenue Growth. Outputs a 0–10 score and a BUY/HOLD/SELL recommendation, with bonus/penalty for share dilution.
 
 ## Tech Stack
 

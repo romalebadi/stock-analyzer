@@ -342,9 +342,14 @@ def build_dataframe(facts, ticker):
         for vals in d.values():
             all_dates.update(vals.keys())
 
-    # Only keep standard quarter-end dates
-    valid_month_days = ["03-31", "06-30", "09-30", "12-31"]
-    all_dates = {d for d in all_dates if any(d.endswith(md) for md in valid_month_days)}
+    # Keep dates that appear across at least 2 metrics (handles non-standard fiscal years)
+    from collections import Counter
+    date_counts = Counter()
+    for d in [income_data, balance_data, cashflow_data]:
+        for vals in d.values():
+            for date in vals.keys():
+                date_counts[date] += 1
+    all_dates = {d for d, count in date_counts.items() if count >= 2}
 
     # Build rows
     rows = []
@@ -373,6 +378,12 @@ def build_dataframe(facts, ticker):
 
     # Drop rows where most columns are empty
     df = df.dropna(thresh=len(df.columns) // 3)
+
+    # Drop rows where Revenue is missing or NetIncome is also missing
+    if "Revenue" in df.columns and "NetIncome" in df.columns:
+        df = df[df["Revenue"].notna() & df["NetIncome"].notna()]
+    elif "Revenue" in df.columns:
+        df = df[df["Revenue"].notna()]
 
     # Keep last 12 rows
     df = df.tail(12).reset_index(drop=True)
@@ -418,6 +429,9 @@ def fetch_and_export(ticker):
     filename = f"{ticker.upper()}_financials.csv"
     df.to_csv(filename, index=False)
 
+    if df is None or df.empty:
+        print("⚠️ No data returned")
+        return None
     print(f"\n✅ Done! Exported {len(df)} rows x {len(df.columns)} columns to {filename}")
     preview_cols = ["Date", "Ticker"] + [c for c in ["Revenue", "NetIncome", "OperatingCashFlow"] if c in df.columns]
     print(df[preview_cols].to_string(index=False))
